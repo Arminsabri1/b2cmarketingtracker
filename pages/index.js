@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ChevronDown } from 'lucide-react';
-
+ 
 // ─────────────────────────────────────────────────────────────────────────
 // Per-client revenue rules. To change pricing, edit this object and redeploy.
 // ─────────────────────────────────────────────────────────────────────────
@@ -49,14 +49,14 @@ const REVENUE_RULES = {
     paused: true,
   },
 };
-
+ 
 const LIFETIME_LEADS = {
   "(Gerald) GBZ Tree LLC": 12,
 };
-
+ 
 const isClientCampaign = (c) => c.startsWith('(');
 const clientFromCampaign = (c) => isClientCampaign(c) ? c.replace(/\s*-\s*Tree Service.*$/, '') : c;
-
+ 
 const fmt$ = (n) => '$' + (n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt$0 = (n) => (n < 0 ? '-' : '') + '$' + Math.abs(Math.round(n ?? 0)).toLocaleString();
 const fmtSigned$ = (n) => (n >= 0 ? '+' : '−') + '$' + Math.abs(Math.round(n)).toLocaleString();
@@ -67,7 +67,7 @@ const addDays = (iso, n) => {
   d.setDate(d.getDate() + n);
   return d.toISOString().slice(0, 10);
 };
-
+ 
 const Card = ({ children, style = {} }) => (
   <div style={{
     background: 'white',
@@ -77,7 +77,7 @@ const Card = ({ children, style = {} }) => (
     ...style,
   }}>{children}</div>
 );
-
+ 
 const selectBase = {
   width: '100%',
   appearance: 'none',
@@ -91,7 +91,7 @@ const selectBase = {
   cursor: 'pointer',
   outline: 'none',
 };
-
+ 
 const Select = ({ value, onChange, options }) => (
   <div style={{ position: 'relative' }}>
     <select value={value} onChange={(e) => onChange(e.target.value)} style={selectBase}>
@@ -100,20 +100,20 @@ const Select = ({ value, onChange, options }) => (
     <ChevronDown size={15} style={{ position: 'absolute', right: 11, top: '50%', transform: 'translateY(-50%)', color: '#8a7d6b', pointerEvents: 'none' }} />
   </div>
 );
-
-const DATE_PRESETS = ['Today', 'Last 1 Day', 'Last 3 Days', 'Last 7 Days', 'Last 14 Days', 'Custom…'];
-
+ 
+const DATE_PRESETS = ['Today', 'Yesterday', 'Last 3 Days', 'Last 7 Days', 'Last 14 Days', 'Custom…'];
+ 
 export default function SmartLeadzTracker() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(null);
-
+ 
   const [datePreset, setDatePreset] = useState('Last 14 Days');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [clientFilter, setClientFilter] = useState('All Clients');
-
+ 
   // Fetch live data from our serverless API route on mount
   useEffect(() => {
     let cancelled = false;
@@ -145,7 +145,7 @@ export default function SmartLeadzTracker() {
       });
     return () => { cancelled = true; };
   }, []);
-
+ 
   const latestDate = useMemo(() => {
     if (rows.length === 0) return null;
     return rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date);
@@ -154,7 +154,7 @@ export default function SmartLeadzTracker() {
     if (rows.length === 0) return null;
     return rows.reduce((m, r) => r.date < m ? r.date : m, rows[0].date);
   }, [rows]);
-
+ 
   const { startDate, endDate, windowDays } = useMemo(() => {
     if (!latestDate) return { startDate: null, endDate: null, windowDays: 0 };
     if (datePreset === 'Custom…') {
@@ -166,25 +166,42 @@ export default function SmartLeadzTracker() {
     if (datePreset === 'Today') {
       return { startDate: latestDate, endDate: latestDate, windowDays: 1 };
     }
-    const map = { 'Last 1 Day': 1, 'Last 3 Days': 3, 'Last 7 Days': 7, 'Last 14 Days': 14 };
+    if (datePreset === 'Yesterday') {
+      const y = addDays(latestDate, -1);
+      return { startDate: y, endDate: y, windowDays: 1 };
+    }
+    const map = { 'Last 3 Days': 3, 'Last 7 Days': 7, 'Last 14 Days': 14 };
     const days = map[datePreset] ?? 14;
     return { startDate: addDays(latestDate, -(days - 1)), endDate: latestDate, windowDays: days };
   }, [datePreset, customStart, customEnd, latestDate]);
-
+ 
   const filteredRows = useMemo(() => {
     if (!startDate || !endDate) return [];
-    return rows.filter(r => {
+    // First pass: date + client filter
+    const inWindow = rows.filter(r => {
       if (r.date < startDate || r.date > endDate) return false;
       if (clientFilter === 'All Clients') return true;
       return clientFromCampaign(r.campaign) === clientFilter;
     });
+    // Second pass: drop campaigns with $0 spend across the window (= paused)
+    const spendByCampaign = {};
+    for (const r of inWindow) {
+      spendByCampaign[r.campaign] = (spendByCampaign[r.campaign] || 0) + r.spend;
+    }
+    return inWindow.filter(r => spendByCampaign[r.campaign] > 0);
   }, [rows, startDate, endDate, clientFilter]);
-
+ 
   const allClients = useMemo(() => {
-    const set = new Set(rows.filter(r => isClientCampaign(r.campaign)).map(r => clientFromCampaign(r.campaign)));
-    return ['All Clients', ...Array.from(set).sort()];
+    const spendByClient = {};
+    for (const r of rows) {
+      if (!isClientCampaign(r.campaign)) continue;
+      const c = clientFromCampaign(r.campaign);
+      spendByClient[c] = (spendByClient[c] || 0) + r.spend;
+    }
+    const active = Object.keys(spendByClient).filter(c => spendByClient[c] > 0).sort();
+    return ['All Clients', ...active];
   }, [rows]);
-
+ 
   const tableRows = useMemo(() => {
     const grouped = {};
     for (const r of filteredRows) {
@@ -203,7 +220,7 @@ export default function SmartLeadzTracker() {
       cvr: r.clicks > 0 ? (r.leads / r.clicks) * 100 : 0,
     })).sort((a, b) => b.spend - a.spend);
   }, [filteredRows]);
-
+ 
   const hardKpis = useMemo(() => {
     let spend = 0, leads = 0, revenue = 0;
     let hasRevenueClient = false;
@@ -230,7 +247,7 @@ export default function SmartLeadzTracker() {
     const profitPerLead = leads > 0 ? profit / leads : null;
     return { spend, leads, revenue, profit, margin, cpl, profitPerLead, hasRevenueClient };
   }, [filteredRows, windowDays]);
-
+ 
   const softKpis = useMemo(() => {
     const t = filteredRows.reduce((acc, r) => ({
       spend: acc.spend + r.spend, leads: acc.leads + r.leads,
@@ -244,17 +261,17 @@ export default function SmartLeadzTracker() {
       cvr: t.clicks > 0 ? (t.leads / t.clicks) * 100 : 0,
     };
   }, [filteredRows]);
-
+ 
   const lastSyncLabel = fetchedAt
     ? new Date(fetchedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     : '—';
-
+ 
   const windowLabel = (startDate && endDate)
     ? (windowDays === 1
       ? new Date(startDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
       : `${new Date(startDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${new Date(endDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`)
     : '—';
-
+ 
   return (
     <div style={{
       minHeight: '100vh',
@@ -265,7 +282,7 @@ export default function SmartLeadzTracker() {
       WebkitFontSmoothing: 'antialiased',
     }}>
       <div style={{ maxWidth: 1240, margin: '0 auto' }}>
-
+ 
         <header style={{ marginBottom: 28 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
             <div>
@@ -280,14 +297,14 @@ export default function SmartLeadzTracker() {
             </div>
           </div>
         </header>
-
+ 
         {error && (
           <Card style={{ padding: 16, marginBottom: 18, background: '#f6e6e2', border: '1px solid #e8c8be' }}>
             <div style={{ fontSize: 13, color: '#9a3924', fontWeight: 500 }}>Couldn't load data</div>
             <div style={{ fontSize: 12, color: '#5e5345', marginTop: 4 }}>{error}</div>
           </Card>
         )}
-
+ 
         <Card style={{ padding: 14, marginBottom: 18 }}>
           <div style={{ display: 'grid', gridTemplateColumns: datePreset === 'Custom…' ? '1fr 1fr 1fr 1.4fr' : '1fr 1.4fr', gap: 10, alignItems: 'center' }}>
             <Select value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />
@@ -303,7 +320,7 @@ export default function SmartLeadzTracker() {
             Showing {windowLabel} · {windowDays} day{windowDays !== 1 ? 's' : ''}{clientFilter !== 'All Clients' ? ` · ${clientFilter}` : ''}
           </div>
         </Card>
-
+ 
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 8, paddingLeft: 4 }}>
             Hard Metrics
@@ -316,7 +333,7 @@ export default function SmartLeadzTracker() {
             <KpiCompact label="Margin" value={hardKpis.hasRevenueClient ? fmtPct(hardKpis.margin) : '—'} tone={!hardKpis.hasRevenueClient ? 'neutral' : hardKpis.margin >= 0 ? 'good' : 'bad'} sub={hardKpis.hasRevenueClient ? `${fmtSigned$(hardKpis.profit)} profit` : null} />
           </div>
         </div>
-
+ 
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 8, paddingLeft: 4 }}>
             Soft Metrics
@@ -329,7 +346,7 @@ export default function SmartLeadzTracker() {
             <KpiCompact label="CVR" value={softKpis.cvr.toFixed(2) + '%'} dim sub="leads / clicks" />
           </div>
         </div>
-
+ 
         <Card style={{ overflow: 'hidden' }}>
           <div style={{ padding: '16px 20px 12px', borderBottom: '1px solid #f1ece4' }}>
             <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#1f1b16' }}>Performance by Campaign</h2>
@@ -377,7 +394,7 @@ export default function SmartLeadzTracker() {
             </table>
           </div>
         </Card>
-
+ 
         <div style={{ fontSize: 11, color: '#a99c87', textAlign: 'center', marginTop: 28, lineHeight: 1.7 }}>
           Live from Windsor.ai — refreshes on every page load. B2C campaigns only.<br />
           Pricing: Ed $85, HLI $80, Five Star $75, Arborcare $65, Green Leaves $75, Vema $90, PROS $1k/week, GBZ tiered.
@@ -386,7 +403,7 @@ export default function SmartLeadzTracker() {
     </div>
   );
 }
-
+ 
 const KpiCompact = ({ label, value, sub, accent, tone = 'default', dim = false, muted = false }) => {
   const palette = (() => {
     if (accent) return { bg: '#e8e4ff', border: '#d4ccff', labelColor: '#4c3fb5', valueColor: '#1f1b16', subColor: '#4c3fb5' };
@@ -402,15 +419,15 @@ const KpiCompact = ({ label, value, sub, accent, tone = 'default', dim = false, 
     </Card>
   );
 };
-
+ 
 const Th = ({ children, align = 'left' }) => (
   <th style={{ textAlign: align, padding: '10px 14px', fontSize: 10.5, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#8a7d6b', borderBottom: '1px solid #efe9e0', whiteSpace: 'nowrap' }}>{children}</th>
 );
-
+ 
 const Td = ({ children, align = 'left', style = {} }) => (
   <td style={{ padding: '10px 14px', textAlign: align, color: '#3a3128', fontVariantNumeric: 'tabular-nums', ...style }}>{children}</td>
 );
-
+ 
 const CplPill = ({ tier, value, leads }) => {
   if (leads === 0) return <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: '#f6e6e2', color: '#9a3924', fontSize: 11.5, fontWeight: 500 }}>—</span>;
   const styles = { good: { bg: '#e8f3e3', fg: '#3a6b29' }, warn: { bg: '#fdf2dc', fg: '#8a6310' }, bad: { bg: '#f6e6e2', fg: '#9a3924' } }[tier];
