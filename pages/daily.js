@@ -1,0 +1,390 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { ChevronDown } from 'lucide-react';
+
+// ─────────────────────────────────────────────────────────────────────────
+// Per-client revenue rules. KEEP IN SYNC with pages/index.js.
+// ─────────────────────────────────────────────────────────────────────────
+const REVENUE_RULES = {
+  "(Nico) PROS Tree & Landscape":              { revenue: ({ days }) => (days / 7) * 1000 },
+  "(Ed) Protree Services LLC":                 { revenue: ({ leads }) => leads * 85 },
+  "(Leonardo) HLI Tree Experts":               { revenue: ({ leads }) => leads * 80 },
+  "(Chris) Five Star Tree Service Long Island":{ revenue: ({ leads }) => leads * 75 },
+  "(Mario) Arborcare Group":                   { revenue: ({ leads }) => leads * 65 },
+  "(Tomas) Green Leaves Tree Care Corp":       { revenue: ({ leads }) => leads * 75 },
+  "(Gerald) GBZ Tree LLC": {
+    revenue: ({ leads, lifetimeTotal = leads }) => {
+      const lifetimeBefore = lifetimeTotal - leads;
+      const tier1Remaining = Math.max(0, 10 - lifetimeBefore);
+      const tier1Leads = Math.min(leads, tier1Remaining);
+      const tier2Leads = leads - tier1Leads;
+      return tier1Leads * 46 + tier2Leads * 70;
+    },
+  },
+  "(Edgar) Vema Tree Service":                 { revenue: ({ leads }) => leads * 90 },
+  "(Cesar) Cesar Tree Service Inc":            { revenue: () => 0, paused: true },
+};
+
+const LIFETIME_LEADS = { "(Gerald) GBZ Tree LLC": 12 };
+
+// Short, AI-friendly names per canonical client. Used in the table only.
+const SHORT_NAMES = {
+  "(Nico) PROS Tree & Landscape":              "Nico PROS",
+  "(Ed) Protree Services LLC":                 "Ed Protree",
+  "(Leonardo) HLI Tree Experts":               "Leonardo HLI",
+  "(Chris) Five Star Tree Service Long Island":"Chris Five Star",
+  "(Mario) Arborcare Group":                   "Mario Arborcare",
+  "(Tomas) Green Leaves Tree Care Corp":       "Tomas Green Leaves",
+  "(Gerald) GBZ Tree LLC":                     "Gerald GBZ",
+  "(Edgar) Vema Tree Service":                 "Edgar Vema",
+  "(Cesar) Cesar Tree Service Inc":            "Cesar",
+};
+
+const isClientCampaign = (c) => c.startsWith('(');
+const clientFromCampaign = (c) => isClientCampaign(c) ? c.replace(/\s*-\s*Tree Service.*$/, '') : c;
+const shortName = (full) => SHORT_NAMES[full] || full;
+
+const fmt$ = (n) => '$' + (n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtSigned$ = (n) => (n >= 0 ? '+' : '−') + '$' + Math.abs(n).toFixed(2);
+const fmtPct = (n) => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+const fmtNum = (n) => (n ?? 0).toLocaleString();
+const addDays = (iso, n) => {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+const DATE_PRESETS = ['Last 7 Days', 'Last 14 Days', 'Last 30 Days', 'Custom…'];
+
+const selectBase = {
+  width: '100%', appearance: 'none', background: 'white',
+  border: '1px solid #e8e3da', borderRadius: 11,
+  padding: '10px 34px 10px 13px', fontSize: 13.5,
+  color: '#1f1b16', fontFamily: 'inherit',
+  cursor: 'pointer', outline: 'none',
+};
+
+const Select = ({ value, onChange, options }) => (
+  <div style={{ position: 'relative' }}>
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={selectBase}>
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+    <ChevronDown size={15} style={{ position: 'absolute', right: 11, top: '50%', transform: 'translateY(-50%)', color: '#8a7d6b', pointerEvents: 'none' }} />
+  </div>
+);
+
+export default function DailyBreakdown() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [fetchedAt, setFetchedAt] = useState(null);
+
+  const [datePreset, setDatePreset] = useState('Last 7 Days');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [campaignFilter, setCampaignFilter] = useState('All campaigns');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch('/api/windsor')
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        if (data.error) {
+          setError(data.error + (data.message ? ': ' + data.message : ''));
+          setLoading(false);
+          return;
+        }
+        const fresh = data.rows || [];
+        setRows(fresh);
+        setFetchedAt(data.fetched_at);
+        if (fresh.length > 0) {
+          const latest = fresh.reduce((m, r) => r.date > m ? r.date : m, fresh[0].date);
+          setCustomEnd(latest);
+          setCustomStart(addDays(latest, -6));
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setError(String(err));
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const latestDate = useMemo(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date);
+  }, [rows]);
+  const earliestDate = useMemo(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce((m, r) => r.date < m ? r.date : m, rows[0].date);
+  }, [rows]);
+
+  const { startDate, endDate } = useMemo(() => {
+    if (!latestDate) return { startDate: null, endDate: null };
+    if (datePreset === 'Custom…') {
+      return { startDate: customStart || latestDate, endDate: customEnd || latestDate };
+    }
+    const map = { 'Last 7 Days': 7, 'Last 14 Days': 14, 'Last 30 Days': 30 };
+    const days = map[datePreset] ?? 7;
+    return { startDate: addDays(latestDate, -(days - 1)), endDate: latestDate };
+  }, [datePreset, customStart, customEnd, latestDate]);
+
+  // Filter to date window + campaign filter, then drop campaigns with $0 spend across window
+  const filteredRows = useMemo(() => {
+    if (!startDate || !endDate) return [];
+    const inWindow = rows.filter(r => {
+      if (r.date < startDate || r.date > endDate) return false;
+      if (campaignFilter === 'All campaigns') return true;
+      return clientFromCampaign(r.campaign) === campaignFilter;
+    });
+    const spendByCampaign = {};
+    for (const r of inWindow) {
+      spendByCampaign[r.campaign] = (spendByCampaign[r.campaign] || 0) + r.spend;
+    }
+    return inWindow.filter(r => spendByCampaign[r.campaign] > 0);
+  }, [rows, startDate, endDate, campaignFilter]);
+
+  const allClients = useMemo(() => {
+    const spendByClient = {};
+    for (const r of rows) {
+      if (!isClientCampaign(r.campaign)) continue;
+      const c = clientFromCampaign(r.campaign);
+      spendByClient[c] = (spendByClient[c] || 0) + r.spend;
+    }
+    const active = Object.keys(spendByClient).filter(c => spendByClient[c] > 0).sort();
+    return ['All campaigns', ...active];
+  }, [rows]);
+
+  // Build daily rows: one per (date, campaign) with full derived metrics
+  const dailyRows = useMemo(() => {
+    const out = filteredRows.map(r => {
+      const client = clientFromCampaign(r.campaign);
+      const rule = REVENUE_RULES[client];
+      let revenue = 0;
+      if (rule && !rule.paused) {
+        revenue = rule.revenue({ leads: r.leads, days: 1, lifetimeTotal: LIFETIME_LEADS[client] });
+      }
+      const profit = revenue - r.spend;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : (r.spend > 0 ? -100 : 0);
+      return {
+        date: r.date,
+        client,
+        spend: r.spend,
+        leads: r.leads,
+        cpl: r.leads > 0 ? r.spend / r.leads : null,
+        revenue,
+        profit,
+        margin,
+        clicks: r.clicks,
+        cpc: r.clicks > 0 ? r.spend / r.clicks : 0,
+        ctr: r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
+        cpm: r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
+        cvr: r.clicks > 0 ? (r.leads / r.clicks) * 100 : 0,
+        impressions: r.impressions,
+      };
+    });
+    // Sort: date desc, then client asc
+    return out.sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return a.client.localeCompare(b.client);
+    });
+  }, [filteredRows]);
+
+  // Period totals
+  const totals = useMemo(() => {
+    const t = dailyRows.reduce((acc, r) => ({
+      spend: acc.spend + r.spend, leads: acc.leads + r.leads, revenue: acc.revenue + r.revenue,
+      clicks: acc.clicks + r.clicks, impressions: acc.impressions + r.impressions,
+    }), { spend:0, leads:0, revenue:0, clicks:0, impressions:0 });
+    return {
+      ...t,
+      cpl: t.leads > 0 ? t.spend / t.leads : null,
+      profit: t.revenue - t.spend,
+      margin: t.revenue > 0 ? ((t.revenue - t.spend) / t.revenue) * 100 : 0,
+      cpc: t.clicks > 0 ? t.spend / t.clicks : 0,
+      ctr: t.impressions > 0 ? (t.clicks / t.impressions) * 100 : 0,
+      cpm: t.impressions > 0 ? (t.spend / t.impressions) * 1000 : 0,
+      cvr: t.clicks > 0 ? (t.leads / t.clicks) * 100 : 0,
+    };
+  }, [dailyRows]);
+
+  const uniqueDays = useMemo(() => new Set(dailyRows.map(r => r.date)).size, [dailyRows]);
+  const uniqueClients = useMemo(() => new Set(dailyRows.map(r => r.client)).size, [dailyRows]);
+
+  // CSV download
+  const downloadCSV = () => {
+    const headers = ['date','client','spend','leads','cpl','revenue','profit','margin_pct','clicks','cpc','ctr_pct','cpm','cvr_pct','impressions'];
+    const rows = dailyRows.map(r => [
+      r.date,
+      shortName('(' + r.client.slice(1)),
+      r.spend.toFixed(2),
+      r.leads,
+      r.cpl != null ? r.cpl.toFixed(2) : '',
+      r.revenue.toFixed(2),
+      r.profit.toFixed(2),
+      r.margin.toFixed(1),
+      r.clicks,
+      r.cpc.toFixed(2),
+      r.ctr.toFixed(2),
+      r.cpm.toFixed(2),
+      r.cvr.toFixed(2),
+      r.impressions,
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `smartleadz-daily-${startDate}-to-${endDate}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const lastSyncLabel = fetchedAt
+    ? new Date(fetchedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : '—';
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: '#f4f1ec',
+      fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, sans-serif',
+      color: '#1f1b16',
+      padding: '36px 28px 64px',
+      WebkitFontSmoothing: 'antialiased',
+    }}>
+      <div style={{ maxWidth: 1400, margin: '0 auto' }}>
+
+        <header style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 6 }}>
+                SmartLeadz · B2C Performance
+              </div>
+              <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Daily breakdown</h1>
+              <div style={{ fontSize: 12, color: '#8a7d6b', marginTop: 4 }}>
+                {startDate && endDate ? `${startDate} → ${endDate} · ${uniqueDays} day${uniqueDays !== 1 ? 's' : ''} · ${uniqueClients} active client${uniqueClients !== 1 ? 's' : ''} · ${dailyRows.length} rows` : '—'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <a href="/" style={{ fontSize: 12, padding: '7px 12px', background: 'transparent', color: '#1f1b16', border: '0.5px solid #d3cfc5', borderRadius: 8, textDecoration: 'none' }}>Tracker</a>
+              <button style={{ fontSize: 12, padding: '7px 12px', background: '#1f1b16', color: '#f4f1ec', border: 'none', borderRadius: 8, cursor: 'pointer' }}>Daily</button>
+              <button onClick={downloadCSV} style={{ fontSize: 12, padding: '7px 12px', background: 'transparent', color: '#1f1b16', border: '0.5px solid #d3cfc5', borderRadius: 8, cursor: 'pointer' }}>Download CSV</button>
+            </div>
+          </div>
+          <div style={{ fontSize: 11.5, color: '#8a7d6b', marginTop: 8 }}>
+            {loading ? 'Loading…' : `Fetched: ${lastSyncLabel}`}
+          </div>
+        </header>
+
+        {error && (
+          <div style={{ padding: 16, marginBottom: 18, background: '#f6e6e2', border: '1px solid #e8c8be', borderRadius: 14 }}>
+            <div style={{ fontSize: 13, color: '#9a3924', fontWeight: 500 }}>Couldn't load data</div>
+            <div style={{ fontSize: 12, color: '#5e5345', marginTop: 4 }}>{error}</div>
+          </div>
+        )}
+
+        <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 14, display: 'grid', gridTemplateColumns: datePreset === 'Custom…' ? '1fr 1fr 1fr 1.4fr' : '1fr 1.4fr', gap: 10 }}>
+          <Select value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />
+          {datePreset === 'Custom…' && (
+            <>
+              <input type="date" value={customStart} min={earliestDate || undefined} max={latestDate || undefined} onChange={(e) => setCustomStart(e.target.value)} style={{ ...selectBase, padding: '10px 13px', cursor: 'text' }} />
+              <input type="date" value={customEnd} min={customStart} max={latestDate || undefined} onChange={(e) => setCustomEnd(e.target.value)} style={{ ...selectBase, padding: '10px 13px', cursor: 'text' }} />
+            </>
+          )}
+          <Select value={campaignFilter} onChange={setCampaignFilter} options={allClients} />
+        </div>
+
+        <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, overflow: 'hidden' }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+              <thead>
+                <tr style={{ background: '#faf7f1' }}>
+                  <Th>Date</Th>
+                  <Th>Client</Th>
+                  <Th align="right">Spend</Th>
+                  <Th align="right">Leads</Th>
+                  <Th align="right">CPL</Th>
+                  <Th align="right">Revenue</Th>
+                  <Th align="right">Profit</Th>
+                  <Th align="right">Margin</Th>
+                  <Th align="right">Clicks</Th>
+                  <Th align="right">CPC</Th>
+                  <Th align="right">CTR</Th>
+                  <Th align="right">CPM</Th>
+                  <Th align="right">CVR</Th>
+                  <Th align="right">Impressions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>Loading…</td></tr>)}
+                {!loading && dailyRows.length === 0 && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>No rows match the current filters.</td></tr>)}
+                {dailyRows.map((r, i) => {
+                  // Add a slightly heavier divider when the date changes (visual day grouping)
+                  const prev = dailyRows[i - 1];
+                  const dateBreak = prev && prev.date !== r.date;
+                  return (
+                    <tr key={`${r.date}-${r.client}`} style={{ borderTop: dateBreak ? '1px solid #e8e3da' : (i === 0 ? 'none' : '0.5px solid #f4efe7') }}>
+                      <Td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{r.date}</Td>
+                      <Td style={{ whiteSpace: 'nowrap' }}>{shortName('(' + r.client.slice(1))}</Td>
+                      <Td align="right">{fmt$(r.spend)}</Td>
+                      <Td align="right" style={{ color: r.leads === 0 ? '#b94a3b' : '#1f1b16' }}>{r.leads}</Td>
+                      <Td align="right">{r.cpl != null ? fmt$(r.cpl) : '—'}</Td>
+                      <Td align="right">{fmt$(r.revenue)}</Td>
+                      <Td align="right" style={{ color: r.profit >= 0 ? '#3a6b29' : '#9a3924' }}>{fmtSigned$(r.profit)}</Td>
+                      <Td align="right" style={{ color: r.margin >= 0 ? '#3a6b29' : '#9a3924' }}>{fmtPct(r.margin)}</Td>
+                      <Td align="right">{fmtNum(r.clicks)}</Td>
+                      <Td align="right">{fmt$(r.cpc)}</Td>
+                      <Td align="right">{r.ctr.toFixed(2)}%</Td>
+                      <Td align="right">{fmt$(r.cpm)}</Td>
+                      <Td align="right">{r.cvr.toFixed(2)}%</Td>
+                      <Td align="right" style={{ color: '#8a7d6b' }}>{fmtNum(r.impressions)}</Td>
+                    </tr>
+                  );
+                })}
+                {dailyRows.length > 0 && (
+                  <tr style={{ borderTop: '1.5px solid #efe9e0', background: '#faf7f1', fontWeight: 500 }}>
+                    <Td style={{ fontWeight: 500 }}>Total</Td>
+                    <Td style={{ color: '#8a7d6b' }}>{uniqueDays} day{uniqueDays !== 1 ? 's' : ''} · {uniqueClients} client{uniqueClients !== 1 ? 's' : ''}</Td>
+                    <Td align="right">{fmt$(totals.spend)}</Td>
+                    <Td align="right">{totals.leads}</Td>
+                    <Td align="right">{totals.cpl != null ? fmt$(totals.cpl) : '—'}</Td>
+                    <Td align="right">{fmt$(totals.revenue)}</Td>
+                    <Td align="right" style={{ color: totals.profit >= 0 ? '#3a6b29' : '#9a3924' }}>{fmtSigned$(totals.profit)}</Td>
+                    <Td align="right" style={{ color: totals.margin >= 0 ? '#3a6b29' : '#9a3924' }}>{fmtPct(totals.margin)}</Td>
+                    <Td align="right">{fmtNum(totals.clicks)}</Td>
+                    <Td align="right">{fmt$(totals.cpc)}</Td>
+                    <Td align="right">{totals.ctr.toFixed(2)}%</Td>
+                    <Td align="right">{fmt$(totals.cpm)}</Td>
+                    <Td align="right">{totals.cvr.toFixed(2)}%</Td>
+                    <Td align="right" style={{ color: '#8a7d6b' }}>{fmtNum(totals.impressions)}</Td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 11, color: '#a99c87', textAlign: 'center', marginTop: 20, lineHeight: 1.7 }}>
+          One row per campaign per day. ISO dates. Paused campaigns excluded. Sorted by date descending, then by client.<br />
+          Pricing: Ed $85, HLI $80, Five Star $75, Arborcare $65, Green Leaves $75, Vema $90, PROS $1k/week, GBZ tiered.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const Th = ({ children, align = 'left' }) => (
+  <th style={{
+    textAlign: align, padding: '9px 12px',
+    fontSize: 10.5, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+    color: '#8a7d6b', borderBottom: '1px solid #efe9e0', whiteSpace: 'nowrap',
+  }}>{children}</th>
+);
+
+const Td = ({ children, align = 'left', style = {} }) => (
+  <td style={{ padding: '8px 12px', textAlign: align, color: '#3a3128', ...style }}>{children}</td>
+);
