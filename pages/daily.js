@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronDown } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Per-client revenue rules. KEEP IN SYNC with pages/index.js.
@@ -26,7 +25,6 @@ const REVENUE_RULES = {
 
 const LIFETIME_LEADS = { "(Gerald) GBZ Tree LLC": 12 };
 
-// Short, AI-friendly names per canonical client. Used in the table only.
 const SHORT_NAMES = {
   "(Nico) PROS Tree & Landscape":              "Nico PROS",
   "(Ed) Protree Services LLC":                 "Ed Protree",
@@ -63,12 +61,19 @@ const selectBase = {
   cursor: 'pointer', outline: 'none',
 };
 
+// Inline chevron SVG — no external dependency
+const ChevronIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8a7d6b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+
 const Select = ({ value, onChange, options }) => (
   <div style={{ position: 'relative' }}>
     <select value={value} onChange={(e) => onChange(e.target.value)} style={selectBase}>
       {options.map(o => <option key={o} value={o}>{o}</option>)}
     </select>
-    <ChevronDown size={15} style={{ position: 'absolute', right: 11, top: '50%', transform: 'translateY(-50%)', color: '#8a7d6b', pointerEvents: 'none' }} />
+    <ChevronIcon />
   </div>
 );
 
@@ -133,7 +138,6 @@ export default function DailyBreakdown() {
     return { startDate: addDays(latestDate, -(days - 1)), endDate: latestDate };
   }, [datePreset, customStart, customEnd, latestDate]);
 
-  // Filter to date window + campaign filter, then drop campaigns with $0 spend across window
   const filteredRows = useMemo(() => {
     if (!startDate || !endDate) return [];
     const inWindow = rows.filter(r => {
@@ -159,7 +163,6 @@ export default function DailyBreakdown() {
     return ['All campaigns', ...active];
   }, [rows]);
 
-  // Build daily rows: one per (date, campaign) with full derived metrics
   const dailyRows = useMemo(() => {
     const out = filteredRows.map(r => {
       const client = clientFromCampaign(r.campaign);
@@ -187,14 +190,12 @@ export default function DailyBreakdown() {
         impressions: r.impressions,
       };
     });
-    // Sort: date desc, then client asc
     return out.sort((a, b) => {
       if (a.date !== b.date) return b.date.localeCompare(a.date);
       return a.client.localeCompare(b.client);
     });
   }, [filteredRows]);
 
-  // Period totals
   const totals = useMemo(() => {
     const t = dailyRows.reduce((acc, r) => ({
       spend: acc.spend + r.spend, leads: acc.leads + r.leads, revenue: acc.revenue + r.revenue,
@@ -215,7 +216,6 @@ export default function DailyBreakdown() {
   const uniqueDays = useMemo(() => new Set(dailyRows.map(r => r.date)).size, [dailyRows]);
   const uniqueClients = useMemo(() => new Set(dailyRows.map(r => r.client)).size, [dailyRows]);
 
-  // CSV download
   const downloadCSV = () => {
     const headers = ['date','client','spend','leads','cpl','revenue','profit','margin_pct','clicks','cpc','ctr_pct','cpm','cvr_pct','impressions'];
     const rows = dailyRows.map(r => [
@@ -323,7 +323,6 @@ export default function DailyBreakdown() {
                 {loading && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>Loading…</td></tr>)}
                 {!loading && dailyRows.length === 0 && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>No rows match the current filters.</td></tr>)}
                 {dailyRows.map((r, i) => {
-                  // Add a slightly heavier divider when the date changes (visual day grouping)
                   const prev = dailyRows[i - 1];
                   const dateBreak = prev && prev.date !== r.date;
                   return (
