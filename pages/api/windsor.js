@@ -1,5 +1,4 @@
-// Server-side route. Calls Windsor with the API key, returns JSON to the page.
-// The key never reaches the browser — it lives in process.env on Vercel.
+// GET /api/windsor — Facebook ad metrics by day, all-time.
 
 export default async function handler(req, res) {
   const apiKey = process.env.WINDSOR_API_KEY;
@@ -7,35 +6,37 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'WINDSOR_API_KEY not set in environment' });
   }
 
-  const fields = ['date', 'campaign', 'campaign_id', 'spend', 'actions_lead', 'clicks', 'impressions'];
-  const url = new URL('https://connectors.windsor.ai/facebook');
-  url.searchParams.set('api_key', apiKey);
-  url.searchParams.set('fields', fields.join(','));
-  url.searchParams.set('date_preset', 'last_14dT');
+  // Pull all-time. Windsor needs an explicit range — picking a very wide window
+  // (Jan 1, 2024 → today) is effectively all-time for this account.
+  const dateTo = new Date().toISOString().slice(0, 10);
+  const dateFrom = '2024-01-01';
+
+  const url = `https://connectors.windsor.ai/facebook?api_key=${apiKey}` +
+    `&fields=date,campaign,campaign_id,spend,actions_lead,clicks,impressions` +
+    `&date_from=${dateFrom}&date_to=${dateTo}`;
 
   try {
-    const r = await fetch(url.toString(), { cache: 'no-store' });
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) {
       const text = await r.text();
-      return res.status(r.status).json({ error: 'Windsor request failed', body: text });
+      return res.status(r.status).json({ error: 'Windsor request failed', body: text.slice(0, 500) });
     }
     const json = await r.json();
-    // Windsor wraps results in { data: [...] }
-    const rows = Array.isArray(json) ? json : (json.data || []);
-    // Drop B2B campaigns server-side
-    const b2c = rows.filter((row) => !String(row.campaign || '').startsWith('B2B'));
-    // Normalize lead field name to "leads" so the front-end stays simple
-    const normalized = b2c.map((row) => ({
-      date: row.date,
-      campaign: row.campaign,
-      campaign_id: row.campaign_id,
-      spend: Number(row.spend) || 0,
-      leads: Number(row.actions_lead) || 0,
-      clicks: Number(row.clicks) || 0,
-      impressions: Number(row.impressions) || 0,
-    }));
-    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
-    return res.status(200).json({ rows: normalized, fetched_at: new Date().toISOString() });
+    const raw = json.data || [];
+    // Filter out B2B campaigns, normalize actions_lead → leads
+    const rows = raw
+      .filter(r => r.campaign && !r.campaign.toLowerCase().includes('b2b'))
+      .map(r => ({
+        date: r.date,
+        campaign: r.campaign,
+        campaign_id: r.campaign_id,
+        spend: Number(r.spend) || 0,
+        leads: Number(r.actions_lead) || 0,
+        clicks: Number(r.clicks) || 0,
+        impressions: Number(r.impressions) || 0,
+      }));
+    res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=300');
+    return res.status(200).json({ rows, fetched_at: new Date().toISOString() });
   } catch (err) {
     return res.status(500).json({ error: 'Fetch error', message: String(err) });
   }
