@@ -1,8 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 
-// ─────────────────────────────────────────────────────────────────────────
-// Per-client revenue rules. KEEP IN SYNC with pages/index.js.
-// ─────────────────────────────────────────────────────────────────────────
 const REVENUE_RULES = {
   "(Nico) PROS Tree & Landscape":              { revenue: ({ days }) => (days / 7) * 1000 },
   "(Ed) Protree Services LLC":                 { revenue: ({ leads }) => leads * 85 },
@@ -45,13 +42,6 @@ const fmt$ = (n) => '$' + (n ?? 0).toLocaleString(undefined, { minimumFractionDi
 const fmtSigned$ = (n) => (n >= 0 ? '+' : '−') + '$' + Math.abs(n).toFixed(2);
 const fmtPct = (n) => (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 const fmtNum = (n) => (n ?? 0).toLocaleString();
-const addDays = (iso, n) => {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-};
-
-const DATE_PRESETS = ['Last 7 Days', 'Last 14 Days', 'Last 30 Days', 'Custom…'];
 
 const selectBase = {
   width: '100%', appearance: 'none', background: 'white',
@@ -61,7 +51,6 @@ const selectBase = {
   cursor: 'pointer', outline: 'none',
 };
 
-// Inline chevron SVG — no external dependency
 const ChevronIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8a7d6b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
     <polyline points="6 9 12 15 18 9" />
@@ -82,10 +71,6 @@ export default function DailyBreakdown() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(null);
-
-  const [datePreset, setDatePreset] = useState('Last 7 Days');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
   const [campaignFilter, setCampaignFilter] = useState('All campaigns');
 
   useEffect(() => {
@@ -101,14 +86,8 @@ export default function DailyBreakdown() {
           setLoading(false);
           return;
         }
-        const fresh = data.rows || [];
-        setRows(fresh);
+        setRows(data.rows || []);
         setFetchedAt(data.fetched_at);
-        if (fresh.length > 0) {
-          const latest = fresh.reduce((m, r) => r.date > m ? r.date : m, fresh[0].date);
-          setCustomEnd(latest);
-          setCustomStart(addDays(latest, -6));
-        }
         setLoading(false);
       })
       .catch(err => {
@@ -119,38 +98,26 @@ export default function DailyBreakdown() {
     return () => { cancelled = true; };
   }, []);
 
-  const latestDate = useMemo(() => {
-    if (rows.length === 0) return null;
-    return rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date);
-  }, [rows]);
   const earliestDate = useMemo(() => {
     if (rows.length === 0) return null;
     return rows.reduce((m, r) => r.date < m ? r.date : m, rows[0].date);
   }, [rows]);
-
-  const { startDate, endDate } = useMemo(() => {
-    if (!latestDate) return { startDate: null, endDate: null };
-    if (datePreset === 'Custom…') {
-      return { startDate: customStart || latestDate, endDate: customEnd || latestDate };
-    }
-    const map = { 'Last 7 Days': 7, 'Last 14 Days': 14, 'Last 30 Days': 30 };
-    const days = map[datePreset] ?? 7;
-    return { startDate: addDays(latestDate, -(days - 1)), endDate: latestDate };
-  }, [datePreset, customStart, customEnd, latestDate]);
+  const latestDate = useMemo(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date);
+  }, [rows]);
 
   const filteredRows = useMemo(() => {
-    if (!startDate || !endDate) return [];
-    const inWindow = rows.filter(r => {
-      if (r.date < startDate || r.date > endDate) return false;
+    const filtered = rows.filter(r => {
       if (campaignFilter === 'All campaigns') return true;
       return clientFromCampaign(r.campaign) === campaignFilter;
     });
     const spendByCampaign = {};
-    for (const r of inWindow) {
+    for (const r of filtered) {
       spendByCampaign[r.campaign] = (spendByCampaign[r.campaign] || 0) + r.spend;
     }
-    return inWindow.filter(r => spendByCampaign[r.campaign] > 0);
-  }, [rows, startDate, endDate, campaignFilter]);
+    return filtered.filter(r => spendByCampaign[r.campaign] > 0);
+  }, [rows, campaignFilter]);
 
   const allClients = useMemo(() => {
     const spendByClient = {};
@@ -218,7 +185,7 @@ export default function DailyBreakdown() {
 
   const downloadCSV = () => {
     const headers = ['date','client','spend','leads','cpl','revenue','profit','margin_pct','clicks','cpc','ctr_pct','cpm','cvr_pct','impressions'];
-    const rows = dailyRows.map(r => [
+    const rowsOut = dailyRows.map(r => [
       r.date,
       shortName('(' + r.client.slice(1)),
       r.spend.toFixed(2),
@@ -234,11 +201,11 @@ export default function DailyBreakdown() {
       r.cvr.toFixed(2),
       r.impressions,
     ]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csv = [headers.join(','), ...rowsOut.map(r => r.join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `smartleadz-daily-${startDate}-to-${endDate}.csv`;
+    a.href = url; a.download = `smartleadz-daily-all-time.csv`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   };
@@ -264,9 +231,9 @@ export default function DailyBreakdown() {
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.12em', color: '#8a7d6b', textTransform: 'uppercase', marginBottom: 6 }}>
                 SmartLeadz · B2C Performance
               </div>
-              <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Daily breakdown</h1>
+              <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Daily breakdown · all time</h1>
               <div style={{ fontSize: 12, color: '#8a7d6b', marginTop: 4 }}>
-                {startDate && endDate ? `${startDate} → ${endDate} · ${uniqueDays} day${uniqueDays !== 1 ? 's' : ''} · ${uniqueClients} active client${uniqueClients !== 1 ? 's' : ''} · ${dailyRows.length} rows` : '—'}
+                {earliestDate && latestDate ? `${earliestDate} → ${latestDate} · ${uniqueDays} day${uniqueDays !== 1 ? 's' : ''} · ${uniqueClients} active client${uniqueClients !== 1 ? 's' : ''} · ${dailyRows.length} rows` : '—'}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -287,14 +254,7 @@ export default function DailyBreakdown() {
           </div>
         )}
 
-        <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 14, display: 'grid', gridTemplateColumns: datePreset === 'Custom…' ? '1fr 1fr 1fr 1.4fr' : '1fr 1.4fr', gap: 10 }}>
-          <Select value={datePreset} onChange={setDatePreset} options={DATE_PRESETS} />
-          {datePreset === 'Custom…' && (
-            <>
-              <input type="date" value={customStart} min={earliestDate || undefined} max={latestDate || undefined} onChange={(e) => setCustomStart(e.target.value)} style={{ ...selectBase, padding: '10px 13px', cursor: 'text' }} />
-              <input type="date" value={customEnd} min={customStart} max={latestDate || undefined} onChange={(e) => setCustomEnd(e.target.value)} style={{ ...selectBase, padding: '10px 13px', cursor: 'text' }} />
-            </>
-          )}
+        <div style={{ background: 'white', border: '1px solid #e8e3da', borderRadius: 14, padding: 12, marginBottom: 14 }}>
           <Select value={campaignFilter} onChange={setCampaignFilter} options={allClients} />
         </div>
 
@@ -321,7 +281,7 @@ export default function DailyBreakdown() {
               </thead>
               <tbody>
                 {loading && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>Loading…</td></tr>)}
-                {!loading && dailyRows.length === 0 && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>No rows match the current filters.</td></tr>)}
+                {!loading && dailyRows.length === 0 && (<tr><td colSpan={14} style={{ padding: 28, textAlign: 'center', color: '#8a7d6b' }}>No rows match the current filter.</td></tr>)}
                 {dailyRows.map((r, i) => {
                   const prev = dailyRows[i - 1];
                   const dateBreak = prev && prev.date !== r.date;
@@ -368,7 +328,7 @@ export default function DailyBreakdown() {
         </div>
 
         <div style={{ fontSize: 11, color: '#a99c87', textAlign: 'center', marginTop: 20, lineHeight: 1.7 }}>
-          One row per campaign per day. ISO dates. Paused campaigns excluded. Sorted by date descending, then by client.<br />
+          All-time daily breakdown. One row per campaign per day. ISO dates. Paused campaigns excluded. Sorted by date descending, then by client.<br />
           Pricing: Ed $85, HLI $80, Five Star $75, Arborcare $65, Green Leaves $75, Vema $90, PROS $1k/week, GBZ tiered.
         </div>
       </div>
