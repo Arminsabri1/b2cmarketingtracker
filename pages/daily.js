@@ -34,6 +34,20 @@ const SHORT_NAMES = {
   "(Cesar) Cesar Tree Service Inc":            "Cesar",
 };
 
+// Map Windsor campaign client name → Airtable Clients table primary name
+// Used to look up billed-lead counts from /api/leads.
+const WINDSOR_TO_AIRTABLE_CLIENT = {
+  "(Nico) PROS Tree & Landscape":              "PROS Tree & Landscape (Phoenix)",
+  "(Ed) Protree Services LLC":                 "Protree Services LLC",
+  "(Leonardo) HLI Tree Experts":               "HLI Tree Experts",
+  "(Chris) Five Star Tree Service Long Island":"Five Star Tree Service Long Island",
+  "(Mario) Arborcare Group":                   "Arborcare group",
+  "(Tomas) Green Leaves Tree Care Corp":       "Green Leaves Tree Care",
+  "(Gerald) GBZ Tree LLC":                     "GBZ Tree LLC",
+  "(Edgar) Vema Tree Service":                 "Vema Tree Service",
+  "(Cesar) Cesar Tree Service Inc":            "Cesar Tree Service Inc",
+};
+
 const isClientCampaign = (c) => c.startsWith('(');
 const clientFromCampaign = (c) => isClientCampaign(c) ? c.replace(/\s*-\s*Tree Service.*$/, '') : c;
 const shortName = (full) => SHORT_NAMES[full] || full;
@@ -68,26 +82,38 @@ const Select = ({ value, onChange, options }) => (
 
 export default function DailyBreakdown() {
   const [rows, setRows] = useState([]);
+  const [leadsByKey, setLeadsByKey] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(null);
+  const [leadsStats, setLeadsStats] = useState(null);
   const [campaignFilter, setCampaignFilter] = useState('All campaigns');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch('/api/windsor')
-      .then(r => r.json())
-      .then(data => {
+
+    Promise.all([
+      fetch('/api/windsor').then(r => r.json()),
+      fetch('/api/leads').then(r => r.json()),
+    ])
+      .then(([windsorData, leadsData]) => {
         if (cancelled) return;
-        if (data.error) {
-          setError(data.error + (data.message ? ': ' + data.message : ''));
+        if (windsorData.error) {
+          setError('Windsor: ' + windsorData.error);
           setLoading(false);
           return;
         }
-        setRows(data.rows || []);
-        setFetchedAt(data.fetched_at);
+        if (leadsData.error) {
+          setError('Airtable leads: ' + leadsData.error);
+          setLoading(false);
+          return;
+        }
+        setRows(windsorData.rows || []);
+        setLeadsByKey(leadsData.leadsByKey || {});
+        setLeadsStats(leadsData.stats || null);
+        setFetchedAt(windsorData.fetched_at);
         setLoading(false);
       })
       .catch(err => {
@@ -106,6 +132,13 @@ export default function DailyBreakdown() {
     if (rows.length === 0) return null;
     return rows.reduce((m, r) => r.date > m ? r.date : m, rows[0].date);
   }, [rows]);
+
+  // Get billed-lead count from Airtable for a given (windsorClient, date)
+  const billedLeadsFor = (windsorClient, date) => {
+    const airtableName = WINDSOR_TO_AIRTABLE_CLIENT[windsorClient];
+    if (!airtableName) return 0;
+    return leadsByKey[`${airtableName}|${date}`] || 0;
+  };
 
   const filteredRows = useMemo(() => {
     const filtered = rows.filter(r => {
@@ -133,10 +166,12 @@ export default function DailyBreakdown() {
   const dailyRows = useMemo(() => {
     const out = filteredRows.map(r => {
       const client = clientFromCampaign(r.campaign);
+      // Override Windsor's lead count with Airtable's billed lead count
+      const leads = billedLeadsFor(client, r.date);
       const rule = REVENUE_RULES[client];
       let revenue = 0;
       if (rule && !rule.paused) {
-        revenue = rule.revenue({ leads: r.leads, days: 1, lifetimeTotal: LIFETIME_LEADS[client] });
+        revenue = rule.revenue({ leads, days: 1, lifetimeTotal: LIFETIME_LEADS[client] });
       }
       const profit = revenue - r.spend;
       const margin = revenue > 0 ? (profit / revenue) * 100 : (r.spend > 0 ? -100 : 0);
@@ -144,8 +179,8 @@ export default function DailyBreakdown() {
         date: r.date,
         client,
         spend: r.spend,
-        leads: r.leads,
-        cpl: r.leads > 0 ? r.spend / r.leads : null,
+        leads,
+        cpl: leads > 0 ? r.spend / leads : null,
         revenue,
         profit,
         margin,
@@ -153,7 +188,7 @@ export default function DailyBreakdown() {
         cpc: r.clicks > 0 ? r.spend / r.clicks : 0,
         ctr: r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0,
         cpm: r.impressions > 0 ? (r.spend / r.impressions) * 1000 : 0,
-        cvr: r.clicks > 0 ? (r.leads / r.clicks) * 100 : 0,
+        cvr: r.clicks > 0 ? (leads / r.clicks) * 100 : 0,
         impressions: r.impressions,
       };
     });
@@ -161,7 +196,8 @@ export default function DailyBreakdown() {
       if (a.date !== b.date) return b.date.localeCompare(a.date);
       return a.client.localeCompare(b.client);
     });
-  }, [filteredRows]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredRows, leadsByKey]);
 
   const totals = useMemo(() => {
     const t = dailyRows.reduce((acc, r) => ({
@@ -234,6 +270,7 @@ export default function DailyBreakdown() {
               <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Daily breakdown · all time</h1>
               <div style={{ fontSize: 12, color: '#8a7d6b', marginTop: 4 }}>
                 {earliestDate && latestDate ? `${earliestDate} → ${latestDate} · ${uniqueDays} day${uniqueDays !== 1 ? 's' : ''} · ${uniqueClients} active client${uniqueClients !== 1 ? 's' : ''} · ${dailyRows.length} rows` : '—'}
+                {leadsStats && ` · ${leadsStats.billedLeads}/${leadsStats.totalLeads} leads billed`}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -328,7 +365,7 @@ export default function DailyBreakdown() {
         </div>
 
         <div style={{ fontSize: 11, color: '#a99c87', textAlign: 'center', marginTop: 20, lineHeight: 1.7 }}>
-          All-time daily breakdown. One row per campaign per day. ISO dates. Paused campaigns excluded. Sorted by date descending, then by client.<br />
+          All-time daily breakdown. Lead counts pulled from Airtable (billed leads only — $price, not Free/Replacement/Prepay/Unbilled). PROS counts all leads (flat retainer).<br />
           Pricing: Ed $85, HLI $80, Five Star $75, Arborcare $65, Green Leaves $75, Vema $90, PROS $1k/week, GBZ tiered.
         </div>
       </div>
